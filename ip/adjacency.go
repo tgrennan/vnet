@@ -149,7 +149,7 @@ func (a *Adjacency) AdjLines(m *Main) (lines []string) {
 			lines = append(lines, l[1:]...)
 		}
 	case LookupNextGlean, LookupNextLocal:
-		lines[0] += " " + fmt.Sprint(vnet.SiName{V: m.v, Si: a.Si})
+		lines[0] += " " + vnet.SiName{m.v, a.Si}.String()
 	}
 	return
 }
@@ -259,7 +259,8 @@ func (nhs NextHopVec) ListNhs(m *Main) string {
 	}
 	s := ""
 	for _, nh := range nhs {
-		s += fmt.Sprintf("  ip:%v intf:%v adj:%v weight:%v\n", nh.Address, vnet.SiName{V: m.v, Si: nh.Si}, nh.Adj, nh.Weight)
+		s += fmt.Sprintf("  ip:%v intf:%v adj:%v weight:%v\n",
+			nh.Address, vnet.SiName{m.v, nh.Si}, nh.Adj, nh.Weight)
 	}
 	return s
 }
@@ -573,7 +574,7 @@ func (m *Main) createMpAdj(given nextHopVec, af AdjacencyFinalizer) (madj *multi
 		madj = m.mpAdjForAdj(ai, false)
 		if madj != nil {
 			dbgvnet.Adj.Log("reuse existing block, adj", madj.adj)
-			if vnet.AdjDebug {
+			if dbgvnet.AdjFlag {
 				m.checkMpAdj(madj.adj)
 			}
 		} else {
@@ -581,7 +582,7 @@ func (m *Main) createMpAdj(given nextHopVec, af AdjacencyFinalizer) (madj *multi
 			// If there is a block matching the resolved nhs, but it's not a mpAdj...
 			// usually means there is some leftover block that didn't get cleaned up
 			// like if a mpAdj was deleted before calling free(m *Main).
-			if vnet.AdjDebug {
+			if dbgvnet.AdjFlag {
 				panic(fmt.Errorf("DEBUG: adjacency.go createMpAdj: found existing block, but it is not mpAdj, ai %v\n", ai))
 			}
 			fmt.Printf("DEBUG: adjacency.go createMpAdj: found existing block, but it is not mpAdj, ai %v\n", ai)
@@ -626,7 +627,7 @@ func (m *Main) createMpAdj(given nextHopVec, af AdjacencyFinalizer) (madj *multi
 
 	m.CallAdjAddHooks(ai)
 	dbgvnet.Adj.Log("create new block, adj", madj.adj)
-	if vnet.AdjDebug {
+	if dbgvnet.AdjFlag {
 		m.checkMpAdj(madj.adj)
 	}
 	return
@@ -836,7 +837,7 @@ func (m *Main) AddDelNextHop(oldAdj Adj, nextHopAdj Adj, nextHopWeight NextHopWe
 				}
 			}
 		} else {
-			if vnet.AdjDebug {
+			if dbgvnet.AdjFlag {
 				panic(fmt.Errorf("adjacency.go AddDelNextHop %v nhAdj %v from %v IsMpAdj %v", vnet.IsDel(isDel), nextHopAdj, oldAdj, m.IsMpAdj(oldAdj)))
 			}
 		}

@@ -7,14 +7,12 @@ package vnet
 import (
 	"github.com/platinasystems/elib"
 	"github.com/platinasystems/elib/dep"
-	"github.com/platinasystems/elib/hw"
 	"github.com/platinasystems/elib/loop"
 
 	"fmt"
 )
 
 type Node struct {
-	Vnet *Vnet
 	loop.Node
 	Dep       dep.Dep
 	Errors    []string
@@ -24,24 +22,22 @@ type Node struct {
 func (n *Node) GetVnetNode() *Node { return n }
 
 func (n *Node) AddSuspendActivity(i *RefIn, a int) {
-	n.Vnet.loop.AddSuspendActivity(&i.In, a, &suspendLimits)
+	vnet.loop.AddSuspendActivity(&i.In, a, &suspendLimits)
 }
-func (n *Node) Suspend(i *RefIn) { n.Vnet.loop.Suspend(&i.In, &suspendLimits) }
-func (n *Node) Resume(i *RefIn)  { n.Vnet.loop.Resume(&i.In, &suspendLimits) }
+
+func (n *Node) Suspend(i *RefIn) {
+	vnet.loop.Suspend(&i.In, &suspendLimits)
+}
+
+func (n *Node) Resume(i *RefIn) {
+	vnet.loop.Resume(&i.In, &suspendLimits)
+}
 
 const MaxVectorLen = loop.MaxVectorLen
 
 type Noder interface {
 	loop.Noder
 	GetVnetNode() *Node
-}
-
-func (v *Vnet) AddNamedNext(n Noder, name string) uint {
-	if nextIndex, err := v.loop.AddNamedNext(n, name); err == nil {
-		return nextIndex
-	} else {
-		panic(err)
-	}
 }
 
 type InputNode struct {
@@ -59,12 +55,6 @@ type InputNoder interface {
 	NodeInput(o *RefOut)
 }
 
-func (v *Vnet) RegisterInputNode(n InputNoder, name string, args ...interface{}) {
-	v.RegisterNode(n, name, args...)
-	x := n.GetInputNode()
-	x.o = n
-}
-
 type OutputNode struct {
 	Node
 	o OutputNoder
@@ -80,24 +70,17 @@ type OutputNoder interface {
 	NodeOutput(i *RefIn)
 }
 
-func (v *Vnet) RegisterOutputNode(n OutputNoder, name string, args ...interface{}) {
-	v.RegisterNode(n, name, args...)
-	x := n.GetOutputNode()
-	x.o = n
-}
-
 type enqueue struct {
 	x, n uint32
-	v    *Vnet
 	i    *RefIn
 	o    *RefOut
 }
 
 func (q *enqueue) sync() {
-	l := q.o.Outs[q.x].GetLen(q.v)
+	l := q.o.Outs[q.x].GetLen()
 	if n := uint(q.n); n > l {
 		q.o.Outs[q.x].Dup(q.i)
-		q.o.Outs[q.x].SetLen(q.v, n)
+		q.o.Outs[q.x].SetLen(n)
 	}
 }
 func (q *enqueue) validate() {
@@ -107,7 +90,7 @@ func (q *enqueue) validate() {
 	out_len, in_len := uint(0), q.i.InLen()
 	for i := range q.o.Outs {
 		o := &q.o.Outs[i]
-		out_len += o.GetLen(q.v)
+		out_len += o.GetLen()
 	}
 	if out_len > in_len {
 		panic(fmt.Errorf("out len %d > in len %d", out_len, in_len))
@@ -116,7 +99,7 @@ func (q *enqueue) validate() {
 
 func (q *enqueue) put(r0 *Ref, x0 uint) {
 	q.o.Outs[x0].Dup(q.i)
-	i0 := q.o.Outs[x0].AddLen(q.v)
+	i0 := q.o.Outs[x0].AddLen()
 	q.o.Outs[x0].Refs[i0] = *r0
 }
 func (q *enqueue) Put1(r0 *Ref, x0 uint) {
@@ -143,7 +126,7 @@ func (q *enqueue) setCachedNext(x0 uint) {
 	q.sync()
 	// New cached next and count.
 	q.x = uint32(x0)
-	q.n = uint32(q.o.Outs[x0].GetLen(q.v))
+	q.n = uint32(q.o.Outs[x0].GetLen())
 }
 
 func (q *enqueue) Put2(r0, r1 *Ref, x0, x1 uint) {
@@ -253,7 +236,7 @@ func (n *InOutNode) LoopInputOutput(l *loop.Loop, i loop.LooperIn, o loop.Looper
 	//
 	in, out := i.(*RefIn), o.(*RefOut)
 	q := n.GetEnqueue(in)
-	q.n, q.i, q.o, q.v = 0, in, out, n.Vnet
+	q.n, q.i, q.o = 0, in, out
 	n.t.NodeInput(in, out)
 	q.sync()
 	q.validate()
@@ -263,42 +246,6 @@ type InOutNoder interface {
 	Noder
 	GetInOutNode() *InOutNode
 	NodeInput(i *RefIn, o *RefOut)
-}
-
-func (v *Vnet) RegisterInOutNode(n InOutNoder, name string, args ...interface{}) {
-	v.RegisterNode(n, name, args...)
-	x := n.GetInOutNode()
-	x.t = n
-}
-
-// Main structure.
-type Vnet struct {
-	loop loop.Loop
-	hw.BufferMain
-	cliMain cliMain
-	eventMain
-	interfaceMain
-	packageMain
-	BridgeAddDelHook       BridgeAddDelHook_t
-	BridgeMemberAddDelHook BridgeMemberAddDelHook_t
-	BridgeMemberLookup     BridgeMemberLookup_t
-}
-
-func (v *Vnet) GetLoop() *loop.Loop { return &v.loop }
-
-func (v *Vnet) RegisterNode(n Noder, format string, args ...interface{}) {
-	v.loop.RegisterNode(n, format, args...)
-	x := n.GetVnetNode()
-	x.Vnet = v
-
-	x.errorRefs = make([]ErrorRef, len(x.Errors))
-	for i := range x.Errors {
-		er := ^ErrorRef(0)
-		if len(x.Errors[i]) > 0 {
-			er = x.NewError(x.Errors[i])
-		}
-		x.errorRefs[i] = er
-	}
 }
 
 func (node *Node) Redirect(in *RefIn, out *RefOut, next uint) {

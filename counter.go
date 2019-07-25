@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build ignore
+
 // Network counters + packet/byte counters optimized for large tables and cache locality.
 package vnet
 
@@ -145,6 +147,7 @@ func (c *CombinedCounters) Add(i uint, p, b uint) { c.Add64(i, uint64(p), uint64
 func (c *Counters) Set(i uint, x uint64) {
 	c.maxi[i] = x
 }
+
 // Get counter value: 2 flavors.
 func (c *CombinedCounters) Get(i uint, r *CombinedCounter) {
 	*r = c.values[i]

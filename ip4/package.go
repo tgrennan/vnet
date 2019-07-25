@@ -31,7 +31,6 @@ func Init(v *vnet.Vnet) *ip.Main {
 	m.Main.PackageInit(v, cf)
 	v.RegisterSwIfAdminUpDownHook(m.swIfAdminUpDown)
 	v.RegisterSwIfAddDelHook(m.swIfAddDel)
-	m.DependsOn("pg", "ethernet")
 	return &m.Main
 }
 
@@ -44,7 +43,6 @@ type Main struct {
 	ip.Main
 	fibMain
 	nodeMain
-	pgMain
 	ifAddrAddDelHooks IfAddrAddDelHookVec
 	FibShowUsageHooks fibShowUsageHookVec
 }
@@ -92,7 +90,6 @@ func (m *Main) Init() (err error) {
 	v := m.Vnet
 	m.Main.Init(v)
 	m.nodeInit(v)
-	m.pgInit(v)
 	m.cliInit(v)
 	RegisterLayer(v, ip.IP_IN_IP, m)
 	ethernet.RegisterLayer(v, ethernet.TYPE_IP4, m)

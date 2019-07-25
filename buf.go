@@ -18,7 +18,9 @@ import (
 
 type RefOpaque struct {
 	// Software interface.
+	/* FIXME-XETH
 	Si Si
+	FIXME-XETH */
 
 	// Aux data.
 	// For example, used by error node to give reason for dropping this packet.
@@ -147,7 +149,9 @@ func getDefaultBufferTemplate() hw.BufferTemplate {
 	r := (*Ref)(unsafe.Pointer(&t.Ref))
 	// Poison so that if user does not override its obvious.
 	r.Aux = poisonErrorRef
+	/* FIXME-XETH
 	r.Si = ^r.Si
+	FIXME-XETH */
 	return t
 }
 
@@ -156,10 +160,6 @@ func (p *BufferPool) GetRefTemplate() *Ref {
 }
 func (p *BufferPool) GetBufferTemplate() *Buffer {
 	return (*Buffer)(unsafe.Pointer(&p.BufferTemplate.Buffer))
-}
-
-func (v *Vnet) AddBufferPool(p *BufferPool) {
-	v.BufferMain.AddBufferPool((*hw.BufferPool)(p))
 }
 
 func (r *RefIn) AllocPoolRefs(p *BufferPool, n uint) {
@@ -190,26 +190,28 @@ func (p *BufferPool) FreeRefs(r *Ref, n uint, freeNext bool) {
 func (i *RefIn) AllocRefs(n uint) { i.AllocPoolRefs(i.BufferPool, n) }
 func (i *RefIn) FreeRefs(n uint)  { i.FreePoolRefs(i.BufferPool, n) }
 
-func (in *RefIn) SetLen(v *Vnet, new_len uint) {
+func (in *RefIn) SetLen(new_len uint) {
 	if elib.Debug {
-		old_len := in.In.GetLen(&v.loop)
+		old_len := in.In.GetLen(&vnet.loop)
 		for i := old_len; i < new_len; i++ {
 			in.BufferPool.ValidateRef(&in.Refs[i], BufferKnownAllocated)
 		}
 	}
-	in.In.SetLen(&v.loop, new_len)
+	in.In.SetLen(&vnet.loop, new_len)
 }
 
-func (i *RefIn) GetLen(v *Vnet) uint { return i.In.GetLen(&v.loop) }
+func (i *RefIn) GetLen() uint {
+	return i.In.GetLen(&vnet.loop)
+}
 
-func (i *RefIn) AddLen(v *Vnet) (l uint) {
-	l = i.In.GetLen(&v.loop)
-	i.In.SetLen(&v.loop, l+1)
+func (i *RefIn) AddLen() (l uint) {
+	l = i.In.GetLen(&vnet.loop)
+	i.In.SetLen(&vnet.loop, l+1)
 	return
 }
-func (i *RefIn) SetPoolAndLen(v *Vnet, p *BufferPool, l uint) {
+func (i *RefIn) SetPoolAndLen(p *BufferPool, l uint) {
 	i.BufferPool = p
-	i.SetLen(v, l)
+	i.SetLen(l)
 }
 
 func Get4Refs(rs []Ref, i uint) (r0, r1, r2, r3 *Ref) {
@@ -247,7 +249,7 @@ func (r *RefIn) Get4(i uint) (_, _, _, _ *Ref) {
 
 func (n *Node) SetOutLen(out *RefIn, in *RefIn, l uint) {
 	out.Dup(in)
-	out.SetLen(n.Vnet, l)
+	out.SetLen(l)
 }
 
 func (r *RefVecIn) FreePoolRefs(p *BufferPool, freeNext bool) {
@@ -283,8 +285,8 @@ func (x showPools) Less(i, j int) bool { return x[i].Pool < x[j].Pool }
 func (x showPools) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
 func (x showPools) Len() int           { return len(x) }
 
-func (v *Vnet) showBufferUsage(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
-	m := &v.BufferMain
+func bufShowBufferUsage(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+	m := &vnet.BufferMain
 
 	sps := []showPool{}
 	fmt.Fprintf(w, "DMA heap: %s\n", hw.DmaHeapUsage())
@@ -299,4 +301,12 @@ func (v *Vnet) showBufferUsage(c cli.Commander, w cli.Writer, in *cli.Input) (er
 	sort.Sort(showPools(sps))
 	elib.Tabulate(sps).Write(w)
 	return
+}
+
+func bufCliInit() {
+	CliAdd(&cli.Command{
+		Name:      "show buffers",
+		ShortHelp: "show dma buffer usage",
+		Action:    bufShowBufferUsage,
+	})
 }

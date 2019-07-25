@@ -5,25 +5,20 @@
 package unix
 
 import (
-	"github.com/platinasystems/elib"
-	"github.com/platinasystems/elib/cli"
 	"github.com/platinasystems/elib/elog"
-	"github.com/platinasystems/elib/parse"
 	"github.com/platinasystems/vnet"
-	"github.com/platinasystems/vnet/ethernet"
 	"github.com/platinasystems/vnet/internal/dbgvnet"
+	"github.com/platinasystems/vnet/ip"
+	"github.com/platinasystems/vnet/ip4"
 	"github.com/platinasystems/vnet/netlink"
 	"github.com/platinasystems/vnet/unix/internal/dbgfdb"
-	"github.com/platinasystems/xeth"
 
-	"bytes"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,15 +123,9 @@ var netns_search_dirs = [...]namespace_search_dir{
 	},
 }
 
-func (m *netlink_main) namespace_register_nodes() {
-	nm := &m.m.net_namespace_main
-	nm.m = m.m
-	nm.rx_node.init(m.m)
-	nm.tx_node.init(nm)
-}
-
 func (nm *net_namespace_main) init() (err error) {
 	// Handcraft default name space.
+	/*FIXME-XETH
 	{
 		ns := &nm.default_namespace
 		ns.m = nm
@@ -170,6 +159,7 @@ func (nm *net_namespace_main) init() (err error) {
 		ns.listen(&nm.m.netlink_main)
 		ns.fibInit(false)
 	}
+	FIXME-XETH*/
 
 	// Setup initial namespaces.
 	// 1 for default namespace.
@@ -209,9 +199,11 @@ func (m *Main) namespace_discovery_done() {
 		}
 		// This is where all initial namespaces are discovered so kick off
 		// interface (and other) processing from xeth.
+		/*FIXME-XETH
 		if FdbOn {
 			initVnetFromXeth(m.v)
 		}
+		FIXME-XETH*/
 	}
 	return
 }
@@ -276,12 +268,16 @@ type net_namespace struct {
 
 	mu sync.Mutex
 
+	/*FIXME-XETH
 	dummy_interface_by_ifindex map[uint32]*dummy_interface
-	si_by_ifindex              si_by_ifindex
+	FIXME-XETH*/
+	si_by_ifindex si_by_ifindex
 
 	is_default bool
 
+	/*FIXME-XETH
 	netlink_namespace
+	FIXME-XETH*/
 
 	interface_by_index map[uint32]*net_namespace_interface
 	interface_by_name  map[string]*net_namespace_interface
@@ -290,20 +286,15 @@ type net_namespace struct {
 //go:generate gentemplate -d Package=unix -id net_namespace -d PoolType=net_namespace_pool -d Type=*net_namespace -d Data=entries github.com/platinasystems/elib/pool.tmpl
 
 type net_namespace_main struct {
-	m                                *Main
-	default_namespace                net_namespace
-	namespace_by_name                map[string]*net_namespace
-	namespace_by_nsid                map[int]*net_namespace
-	namespace_by_inode               map[uint64]*net_namespace
-	vnet_tuntap_interface_by_si      map[vnet.Si]*tuntap_interface
-	vnet_tuntap_interface_by_address map[string]*tuntap_interface
-	interface_by_si                  map[vnet.Si]*net_namespace_interface
-	registered_hwifer_by_si          map[vnet.Si]vnet.HwInterfacer
-	registered_hwifer_by_address     map[string]vnet.HwInterfacer
-	namespace_pool                   net_namespace_pool
-	rx_node                          rx_node
-	tx_node                          tx_node
-	tuntap_sendmsg_recvmsg_disable   bool
+	m                            *Main
+	default_namespace            net_namespace
+	namespace_by_name            map[string]*net_namespace
+	namespace_by_nsid            map[int]*net_namespace
+	namespace_by_inode           map[uint64]*net_namespace
+	interface_by_si              map[vnet.Si]*net_namespace_interface
+	registered_hwifer_by_si      map[vnet.Si]vnet.HwInterfacer
+	registered_hwifer_by_address map[string]vnet.HwInterfacer
+	namespace_pool               net_namespace_pool
 
 	// Number of namespaces (files in /var/run/netns/* or elsewhere) remaining to be discovered at initialization time.
 	// Zero means that all initial namespaces have been discovered.
@@ -326,6 +317,7 @@ func (m *net_namespace_main) nsid_for_path(elem ...string) (nsid int, inode uint
 }
 
 func (m *net_namespace_main) nsid_for_fd(fd int) (nsid int, inode uint64, err error) {
+	/*FIXME-XETH
 	var s syscall.Stat_t
 	syscall.Fstat(fd, &s)
 	inode = s.Ino
@@ -343,6 +335,7 @@ func (m *net_namespace_main) nsid_for_fd(fd int) (nsid int, inode uint64, err er
 	case *netlink.ErrorMessage:
 		err = fmt.Errorf("netlink GETNSID: %v", syscall.Errno(-v.Errno))
 	}
+	FIXME-XETH*/
 	return
 }
 
@@ -408,11 +401,6 @@ func (m *net_namespace_main) foreachProcFs(f func(p *net_namespace_process)) (er
 		p.ns = m.namespace_by_inode[p.inode]
 		f(&p)
 	}
-	return
-}
-
-func (e *netlinkEvent) netnsMessage(msg *netlink.NetnsMessage) (err error) {
-	// Nothing to do.  Discovery of namespaces is done via files in /var/run
 	return
 }
 
@@ -545,18 +533,6 @@ func (ns *net_namespace) add_del_interface(m *Main, msg *netlink.IfInfoMessage) 
 			fmt.Printf("add_del_interface(): newlink for %s in ns %s\n",
 				msg.Attrs[netlink.IFLA_IFNAME].String(), ns.name)
 		}
-		if !FdbOn {
-			// If this is a new link created after goes is up - ignore it
-			// since we don't handle dynamic port-provisioning (via ethtool) yet.
-			if _, found := vnet.Ports.GetPortByName(msg.Attrs[netlink.IFLA_IFNAME].String()); !found &&
-				msg.InterfaceKind() != netlink.InterfaceKindVlan {
-				if false {
-					fmt.Printf("add_del_interface(): Interface created dynamically - ignored %s (%s)\n",
-						msg.Attrs[netlink.IFLA_IFNAME].String(), ns.name)
-				}
-				return
-			}
-		}
 	case netlink.RTM_DELLINK:
 		is_del = true
 	default:
@@ -618,10 +594,10 @@ func (ns *net_namespace) add_del_interface(m *Main, msg *netlink.IfInfoMessage) 
 			// Manufacture what we need for this interface.
 			// Also filter by front-panel interfaces only with registered hwifs
 			// i.e. no hits for interfaces like lo, eth1, eth2, docker..., eth-1-0.1
-			hi, found := ns.m.m.v.HwIfByName(name)
-			if found {
-				hwifer := ns.m.m.v.HwIfer(hi)
-				ns.m.RegisterHwInterface(hwifer)
+			if hwif := vnet.HwIfNamed(name); hwif != nil {
+				/* FIXME-XETH
+				ns.m.RegisterHwInterface(hwif)
+				FIXME-XETH */
 			}
 
 		}
@@ -649,6 +625,7 @@ func (ns *net_namespace) add_del_interface(m *Main, msg *netlink.IfInfoMessage) 
 	return
 }
 
+/*FIXME-XETH
 func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, ifindex uint32, address net.HardwareAddr, devtype uint8, iflinkindex int32, vlanid uint16) (err error) {
 	dbgvnet.Adj.Logf("ns %v %v ifname %v ifindex %v address %v devtype %v iflinkindex %v vlanid %v",
 		ns.name, vnet.IsDel(isDel), ifname, ifindex, address, devtype, iflinkindex, vlanid)
@@ -756,6 +733,7 @@ func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, 
 	}
 	return
 }
+FIXME-XETH*/
 
 func (m *net_namespace_main) find_interface_with_ifindex(index uint32) (intf *net_namespace_interface) {
 	for _, ns := range m.namespace_by_name {
@@ -771,6 +749,7 @@ func (m *net_namespace_main) find_interface_with_ifindex(index uint32) (intf *ne
 }
 
 func (m *net_namespace_main) add_del_vlan(intf *net_namespace_interface, msg *netlink.IfInfoMessage, is_del bool) (err error) {
+	/* FIXME-XETH
 	ns := intf.namespace
 	// ifla-link contains parent link of this vlan interface
 	// e.g. eth-1-0: ifla_link will be ifindex of eth1 and ifla_vlan_id will be 6 (the fp vlan index)
@@ -820,11 +799,13 @@ func (m *net_namespace_main) add_del_vlan(intf *net_namespace_interface, msg *ne
 		si := ns.m.m.v.NewSwSubInterface(hw.Si(), vnet.IfId(eid), intf.name)
 		m.set_si(intf, si)
 	}
+	FIXME-XETH */
 	return
 }
 
 //this is used in fdb mode
 func (m *net_namespace_main) addDelVlan(intf *net_namespace_interface, supifindex int32, vlanid uint16, isDel bool) (err error) {
+	/* FIXME-XETH
 	dbgfdb.Ns.Log(vnet.IsDel(isDel).String(), supifindex, vlanid)
 
 	ns := intf.namespace
@@ -871,6 +852,7 @@ func (m *net_namespace_main) addDelVlan(intf *net_namespace_interface, supifinde
 			ns.name, sup_si, sup_si.IsSwSubInterface(v), vnet.IfId(eid), vlanid, vnet.SiName{V: v, Si: si})
 		m.set_si(intf, si)
 	}
+	FIXME-XETH */
 	return
 }
 
@@ -928,10 +910,13 @@ func (m *net_namespace_main) set_si(intf *net_namespace_interface, si vnet.Si) {
 		m.interface_by_si = make(map[vnet.Si]*net_namespace_interface)
 	}
 	m.interface_by_si[si] = intf
+	/*FIXME-XETH
 	vnet.Ports.SetSiByIfindex(int32(intf.ifindex), si)
+	FIXME=XETH*/
 }
 
 func (m *net_namespace_main) RegisterHwInterface(h vnet.HwInterfacer) {
+	/* FIXME-XETH
 	hw := h.GetHwIf()
 	si := hw.Si()
 	// Defer registration until after discovery is done.
@@ -949,12 +934,12 @@ func (m *net_namespace_main) RegisterHwInterface(h vnet.HwInterfacer) {
 		return
 	}
 	m.set_si(intf, si)
-	h.SetAddress(intf.address)
 
 	if m.registered_hwifer_by_address == nil {
 		m.registered_hwifer_by_address = make(map[string]vnet.HwInterfacer)
 	}
 	m.registered_hwifer_by_address[string(intf.address)] = h
+	FIXME-XETH */
 }
 
 func (ns *net_namespace) String() (s string) {
@@ -965,120 +950,13 @@ func (ns *net_namespace) String() (s string) {
 	return
 }
 
-func (m *netlink_main) show_net_namespaces(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
-	nm := &m.m.net_namespace_main
-
-	var matching_ns_names []parse.Regexp
-	show_procs := false
-	detail := false
-	for !in.End() {
-		var re parse.Regexp
-		switch {
-		case in.Parse("p%*rocess"):
-			show_procs = true
-		case in.Parse("d%*etail"):
-			detail = true
-		case in.Parse("m%*atching %v", &re):
-			matching_ns_names = append(matching_ns_names, re)
-		case in.Parse("%v", &re):
-			matching_ns_names = append(matching_ns_names, re)
-		default:
-			err = cli.ParseError
-			return
-		}
-	}
-
-	if show_procs {
-		type proc struct {
-			Command   string `format:"%-40s"`
-			Pid       uint64 `format:"%8d"`
-			Namespace string `format:"%s" align:"center" width:"30"`
-			NSID      string `format:"%s" align:"center"`
-			Inode     uint64 `format:"0x%8x" width:"16" align:"center"`
-		}
-		var ps []proc
-		nm.foreachProcFs(func(p *net_namespace_process) {
-			x := proc{
-				Command: p.command,
-				Pid:     p.pid,
-				Inode:   p.inode,
-			}
-			if p.nsid != netlink.DefaultNsid {
-				x.NSID = fmt.Sprintf("%d", p.nsid)
-			}
-			if p.ns != nil {
-				x.Namespace = p.ns.name
-			}
-			if !detail && x.Namespace == default_namespace_name {
-				return
-			}
-			ps = append(ps, x)
-		})
-		sort.Slice(ps, func(i, j int) bool {
-			pi, pj := &ps[i], &ps[j]
-			if pi.Namespace == pj.Namespace {
-				return pi.Command < pj.Command
-			}
-			return pi.Namespace < pj.Namespace
-		})
-		elib.Tabulate(ps).Write(w)
-		return
-	}
-
-	type nsIf struct {
-		Interface string  `format:"%-30s"`
-		Type      string  `format:"%s" align:"center"`
-		Namespace string  `format:"%s" align:"center" width:"30"`
-		NSID      string  `format:"%s" align:"center"`
-		Si        vnet.Si `format:"0x%x" align:"center"`
-	}
-	var ifs []nsIf
-	for _, ns := range nm.namespace_by_name {
-		for _, intf := range ns.interface_by_index {
-			// Filter by namespace name.
-			if len(matching_ns_names) > 0 {
-				found := false
-				for i := range matching_ns_names {
-					if found = matching_ns_names[i].MatchString(ns.name); found {
-						break
-					}
-				}
-				if !found {
-					continue
-				}
-			}
-
-			x := nsIf{Namespace: ns.name, Interface: intf.name, Type: intf.kind.String(), Si: vnet.SiNil}
-			x.Si = intf.si
-			if ns.nsid != -1 {
-				x.NSID = fmt.Sprintf("%d", ns.nsid)
-			}
-			ifs = append(ifs, x)
-		}
-	}
-	sort.Slice(ifs, func(i, j int) bool {
-		ni, nj := &ifs[i], &ifs[j]
-		if ni.Namespace == nj.Namespace {
-			if ni.Si != vnet.SiNil && nj.Si != vnet.SiNil {
-				ifi, ifj := m.m.v.SwIf(ni.Si), m.m.v.SwIf(nj.Si)
-				return m.m.v.SwLessThan(ifi, ifj)
-			}
-			return ni.Interface < nj.Interface
-		}
-		return ni.Namespace < nj.Namespace
-	})
-	colMap := map[string]bool{
-		"si": false,
-	}
-	elib.Tabulate(ifs).WriteCols(w, colMap)
-	return
-}
-
 func (ns *net_namespace) allocate_sockets() (err error) {
+	/*FIXME-XETH
 	ns.netlink_socket_fds[0], err = syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW, syscall.NETLINK_ROUTE)
 	if err == nil {
 		ns.netlink_socket_fds[1], err = syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW, syscall.NETLINK_ROUTE)
 	}
+	FIXME-XETH*/
 	return
 }
 
@@ -1090,6 +968,7 @@ var (
 )
 
 func (ns *net_namespace) add(m *net_namespace_main, e *add_del_namespace_event) (err error) {
+	/*FIXME-XETH
 	// Allocate unique index for namespace.
 	ns.index = m.namespace_pool.GetIndex()
 	m.namespace_pool.entries[ns.index] = ns
@@ -1164,7 +1043,37 @@ func (ns *net_namespace) add(m *net_namespace_main, e *add_del_namespace_event) 
 		return
 	}
 	ns.listen(&m.m.netlink_main)
+	FIXME-XETH*/
 	ns.fibInit(false)
+	return
+}
+
+func (ns *net_namespace) siForIfIndex(ifIndex uint32) (si vnet.Si, ok bool) {
+	si = vnet.SiNil
+	si, ok = ns.si_by_ifindex.get(ifIndex)
+	return
+}
+
+func (ns *net_namespace) fibIndexForNamespace() ip.FibIndex { return ip.FibIndex(ns.index) }
+func (ns *net_namespace) fibInit(is_del bool) {
+	/*FIXME-XETH
+	m4 := ip4.GetMain(ns.m.m.v)
+	var name string
+	if !is_del {
+		name = ns.name
+	}
+	fi := ns.fibIndexForNamespace()
+	m4.SetFibNameForIndex(name, fi)
+	if is_del {
+		m4.FibReset(fi)
+	}
+	FIXME-XETH*/
+}
+func (ns *net_namespace) validateFibIndexForSi(si vnet.Si) {
+	m4 := ip4.GetMain(ns.m.m.v)
+	fi := ns.fibIndexForNamespace()
+
+	m4.SetFibIndexForSi(si, fi)
 	return
 }
 
@@ -1214,7 +1123,9 @@ func (ns *net_namespace) del(m *net_namespace_main) {
 		syscall.Close(ns.ns_fd)
 		ns.ns_fd = -1
 	}
+	/*FIXME-XETH
 	ns.netlink_socket_pair.close()
+	FIXME-XETH*/
 	ns.index = ^uint(0)
 }
 

@@ -83,9 +83,11 @@ func (m *Main) showIpNeighbor(c cli.Commander, w cli.Writer, in *cli.Input) (err
 			ai := ip.AdjNil
 			ln := 0
 			rwSi := n.Si
-			if n.Si.Kind(v) == vnet.SwBridgeInterface {
+			if n.Si.SwIf(v).IsBridge() {
+				/*FIXME-XETH
 				br := GetBridgeBySi(n.Si)
 				rwSi, _ = br.LookupSiCtag(n.Ethernet, v)
+				FIXME-XETH*/
 			}
 			if ai, as, ok = im.GetReachable(&prefix, rwSi); ok {
 				for i := range as {
@@ -111,6 +113,7 @@ func (m *Main) showIpNeighbor(c cli.Commander, w cli.Writer, in *cli.Input) (err
 }
 
 func (m *Main) fdbBridgeShow(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+	/*FIXME-XETH
 	var brmPerPort map[int32]uint32
 
 	brmPerPort = make(map[int32]uint32)
@@ -133,6 +136,7 @@ func (m *Main) fdbBridgeShow(c cli.Commander, w cli.Writer, in *cli.Input) (err 
 	for port, count := range brmPerPort {
 		fmt.Fprintf(w, "port %v, count %v\n", port, count)
 	}
+	FIXME-XETH*/
 
 	return
 }

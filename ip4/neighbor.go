@@ -30,7 +30,7 @@ func (n *Neighbor) NextHopFibIndex(m *Main) ip.FibIndex { return n.FibIndex }
 func (n *Neighbor) FinalizeAdjacency(a *ip.Adjacency) {
 	m := n.m
 	if a.IsLocal() {
-		ift := n.LocalSi.GetType(m.v)
+		ift := n.LocalSi.GetType(m.Vnet)
 		a.LookupNextIndex = ip.LookupNextRewrite
 		ift.SwInterfaceSetRewrite(&a.Rewrite, n.LocalSi, &m.rewriteNode, vnet.IP4)
 	}

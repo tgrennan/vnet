@@ -10,7 +10,6 @@ import (
 
 type RxDmaRing struct {
 	r        RxDmaRinger
-	v        *Vnet
 	ring_len uint
 	sequence uint
 	refs     RefVec
@@ -25,9 +24,8 @@ type RxDmaRinger interface {
 
 func (r *RxDmaRing) getRing() *RxDmaRing { return r }
 
-func (g *RxDmaRing) RxDmaRingInit(v *Vnet, r RxDmaRinger, flags RxDmaDescriptorFlags, desc_flag_end_of_packet_shift uint, pool *BufferPool, ring_len uint) {
+func (g *RxDmaRing) RxDmaRingInit(r RxDmaRinger, flags RxDmaDescriptorFlags, desc_flag_end_of_packet_shift uint, pool *BufferPool, ring_len uint) {
 	g.r = r
-	g.v = v
 	g.is_sop = 1 // initialize at start of packet.
 	g.pool = pool
 	g.ring_len = ring_len
@@ -208,9 +206,11 @@ func (g *RxDmaRing) slow_path(r0 *Ref, f0 RxDmaDescriptorFlags) {
 	}
 
 	// Interface change?  Flush counters.
+	/* FIXME-XETH
 	if rs0.Si != g.Si {
 		g.flush_interface_counters()
 	}
+	FIXME-XETH */
 
 	// Set interface and error at the same time.
 	r0.RefOpaque = rs0.RefOpaque
@@ -233,7 +233,7 @@ func (g *RxDmaRing) slow_path(r0 *Ref, f0 RxDmaDescriptorFlags) {
 	} else {
 		n_next0 := in.InLen()
 		l0 := n_next0 + 1
-		in.SetPoolAndLen(g.v, g.pool, l0)
+		in.SetPoolAndLen(g.pool, l0)
 		in.Refs[n_next0] = ref
 		n_next0 = l0
 		if l0 > g.max_n_next {
@@ -245,7 +245,7 @@ func (g *RxDmaRing) slow_path(r0 *Ref, f0 RxDmaDescriptorFlags) {
 			s.n_last_miss_next++
 			if s.n_last_miss_next >= 4 {
 				if n_next > 0 {
-					g.Out.Outs[next].SetPoolAndLen(g.v, g.pool, n_next)
+					g.Out.Outs[next].SetPoolAndLen(g.pool, n_next)
 					if n_next > g.max_n_next {
 						g.max_n_next = n_next
 					}
@@ -268,15 +268,17 @@ func (g *RxDmaRing) flush_interface_counters() {
 	if g.n_packets == 0 {
 		return
 	}
-	t := g.v.GetIfThread(0)
+	/* FIXME-XETH
+	t := vnet.GetIfThread(0)
 	IfRxCounter.Add64(t, g.Si, g.n_packets, g.n_bytes)
+	FIXME-XETH */
 	g.n_packets = 0
 	g.n_bytes = 0
 }
 
 func (g *RxDmaRing) Flush() {
 	if g.n_next > 0 {
-		g.Out.Outs[g.Next].SetPoolAndLen(g.v, g.pool, g.n_next)
+		g.Out.Outs[g.Next].SetPoolAndLen(g.pool, g.n_next)
 		g.n_next = 0
 	}
 	g.flush_interface_counters()

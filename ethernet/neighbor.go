@@ -58,18 +58,20 @@ var ErrDelUnknownNeighbor = errors.New("delete unknown neighbor")
 
 func (m *ipNeighborMain) AddDelIpNeighbor(im *ip.Main, n *IpNeighbor, isDel bool) (ai ip.Adj, err error) {
 	var rwSi vnet.Si
-	var isBridge bool
 	var ctag, stag uint16
-	var br *bridgeEntry
+	var vbe interface{}
 
 	ai = ip.AdjNil
 	nf := &m.ipNeighborFamilies[im.Family]
 
 	// if bridge, then rwSi is the member port to reach the DA
-	if n.Si.Kind(m.v) == vnet.SwBridgeInterface {
-		isBridge = true
+	if n.Si.SwIf(m.v).IsBridge() {
+		_ = ctag
+		_ = stag
+		/*FIXME-XETH
 		// FIXME need to flush fib when L2 entry removed
-		br = GetBridgeBySi(n.Si)
+		br := GetBridgeBySi(n.Si)
+		vbe = br
 		stag = br.port.Stag
 
 		// rewrite si port is bridge member
@@ -82,6 +84,7 @@ func (m *ipNeighborMain) AddDelIpNeighbor(im *ip.Main, n *IpNeighbor, isDel bool
 		}
 		dbgvnet.Adj.Logf("rewrite br %v stag %v prefix %v, si %v ctag %v",
 			vnet.SiName{V: m.v, Si: n.Si}, br.port.Stag, &n.Ip, rwSi, ctag)
+		FIXME-XETH*/
 	} else {
 		rwSi = n.Si
 		dbgvnet.Adj.Logf("rewrite %v prefix %v",
@@ -153,8 +156,11 @@ func (m *ipNeighborMain) AddDelIpNeighbor(im *ip.Main, n *IpNeighbor, isDel bool
 		h := m.v.SetRewriteNodeHwIf(rw, hw, im.RewriteNode)
 		rw.Si = rwSi
 
-		if isBridge {
-			br.SetRewrite(m.v, rw, im.PacketType, n.Ethernet[:], ctag)
+		if vbe != nil {
+			/*FIXME-XETH
+			be = vbe.(*bridgeEntry)
+			be.SetRewrite(m.v, rw, im.PacketType, n.Ethernet[:], ctag)
+			FIXME=XETH*/
 		} else {
 			h.SetRewrite(m.v, rw, im.PacketType, n.Ethernet[:])
 		}

@@ -4,6 +4,7 @@
 
 package unix
 
+/*FIXME-XETH
 import (
 	"fmt"
 	"sort"
@@ -237,3 +238,4 @@ func (m *netlink_main) cliInit() (err error) {
 	}
 	return
 }
+FIXME-XETH*/

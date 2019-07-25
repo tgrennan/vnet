@@ -15,7 +15,6 @@ type Main struct {
 	vnet.Package
 	ipNeighborMain
 	nodeMain
-	pgMain
 	m4, m6   *ip.Main
 	layerMap map[Type]vnet.Layer
 }
@@ -38,7 +37,6 @@ func Init(v *vnet.Vnet, m4, m6 *ip.Main) {
 	m := &Main{}
 	m.m4, m.m6 = m4, m6
 	packageIndex = v.AddPackage("ethernet", m)
-	m.DependsOn("pg")
 }
 
 func GetMain(v *vnet.Vnet) *Main { return v.GetPackage(packageIndex).(*Main) }
@@ -47,7 +45,6 @@ func (m *Main) Init() (err error) {
 	v := m.Vnet
 	m.ipNeighborMain.init(v, m.m4, m.m6)
 	m.nodeInit(v)
-	m.pgMain.pgInit(v)
 	m.cliInit(v)
 	return
 }

@@ -80,10 +80,8 @@ func (n *errorNode) MakeLoopIn() loop.LooperIn { return &RefIn{} }
 
 var ErrorNode = &errorNode{}
 
-func init() {
-	AddInit(func(v *Vnet) {
-		v.RegisterOutputNode(ErrorNode, "error")
-	})
+func errorNodeInit() {
+	RegisterOutputNode(ErrorNode, "error")
 }
 
 func (en *errorNode) NodeOutput(ri *RefIn) {
@@ -175,7 +173,7 @@ func (ns errNodes) Less(i, j int) bool {
 func (ns errNodes) Swap(i, j int) { ns[i], ns[j] = ns[j], ns[i] }
 func (ns errNodes) Len() int      { return len(ns) }
 
-func (v *Vnet) showErrors(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+func errorCliShow(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
 	en := ErrorNode
 	ns := []errNode{}
 	for i := range en.errs {
@@ -208,7 +206,7 @@ func (v *Vnet) showErrors(c cli.Commander, w cli.Writer, in *cli.Input) (err err
 	return
 }
 
-func (v *Vnet) clearErrors(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+func errorCliClear(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
 	for _, t := range ErrorNode.threads {
 		if t != nil {
 			copy(t.countsLastClear, t.counts)
@@ -217,17 +215,19 @@ func (v *Vnet) clearErrors(c cli.Commander, w cli.Writer, in *cli.Input) (err er
 	return
 }
 
-func init() {
-	AddInit(func(v *Vnet) {
-		v.CliAdd(&cli.Command{
+func errorCliInit() {
+	for _, cmd := range []*cli.Command{
+		&cli.Command{
 			Name:      "show errors",
 			ShortHelp: "show error counters",
-			Action:    v.showErrors,
-		})
-		v.CliAdd(&cli.Command{
+			Action:    errorCliShow,
+		},
+		&cli.Command{
 			Name:      "clear errors",
 			ShortHelp: "clear error counters",
-			Action:    v.clearErrors,
-		})
-	})
+			Action:    errorCliClear,
+		},
+	} {
+		CliAdd(cmd)
+	}
 }

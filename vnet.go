@@ -1,226 +1,300 @@
-// Copyright 2016 Platina Systems, Inc. All rights reserved.
+// Copyright © 2016-2019 Platina Systems, Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
 package vnet
 
 import (
-	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"sync/atomic"
+	"syscall"
 
-	"github.com/platinasystems/elib"
+	"github.com/platinasystems/elib/cli"
 	"github.com/platinasystems/elib/cpu"
-	"github.com/platinasystems/elib/dep"
+	"github.com/platinasystems/elib/elog"
+	"github.com/platinasystems/elib/hw"
 	"github.com/platinasystems/elib/loop"
 	"github.com/platinasystems/elib/parse"
-	"github.com/platinasystems/vnet/internal/dbgvnet"
-	"github.com/platinasystems/xeth"
 )
 
-//Debug Flags
-var AdjDebug bool
-
-// drivers/net/ethernet/xeth/platina_mk1.c: xeth.MsgIfinfo
-//
-// vnetd.go moved to go/platform/mk1/vnetd.go
-// PortEntry go/main/goes-platina-mk1/vnetd.go:vnetdInit() xeth.XETH_MSG_KIND_IFINFO
-// PortProvision go/main/goes-platina-mk1/vnetd.go:parsePortConfig() from entry Ports
-//
-// PortConfig fe1/platform.go:parsePortConfig() PortProvision
-// Port fe1/internal/fe1a/port_init.go:PortInit()
-//
-// 1. go/main/goes-platina-mk1/vnetd
-// 2. vnet/unix/fdb PortEntry from msg(1)
-// vnetd makes PortProvision(3) from PortEntry
-// platform.go parses portprovision to create PortConfig(4)
-// which PortInit uses to set config structure(5).
-//
-// NOTE: PortEntry is used by port, vlan, and bridge devtypes
-
-type PortEntry struct {
-	Net          uint64
-	Ifindex      int32
-	Iflinkindex  int32 // system side eth# ifindex
-	Ifname       string
-	Flags        xeth.EthtoolPrivFlags
-	Iff          net.Flags
-	Speed        xeth.Mbps
-	Autoneg      uint8
-	PortVid      uint16
-	Stag         uint16 // internal vlan tag for bridge
-	Ctag         uint16 // vlan tag to identify vlan member and set l3_iif/vrf via vlan_xlate
-	Portindex    int16
-	Subportindex int8
-	PuntIndex    uint8 // 0-based meth#, derived from Iflinkindex
-	Devtype      uint8
-	StationAddr  net.HardwareAddr
-	IPNets       []*net.IPNet
+// Main structure.
+var vnet struct {
+	hw.BufferMain
+	loop    loop.Loop
+	cliMain cliMain
+	stopch  chan<- struct{}
 }
 
-//var Ports map[string]*PortEntry       // FIXME ifname of bridge need not be unique across netns
-//var PortsByIndex map[int32]*PortEntry // FIXME - driver only sends platina-mk1 type
-//var SiByIfindex map[int32]Si          // FIXME ifindex is not unique across netns, also impacts PortsByIndex[]
+// each go-routine shoule vnet.WG.Add(1) then defer vnet.WG.Done()
+var WG sync.WaitGroup
 
-type PortsMap struct {
-	sync.Map             // indexed by ifname, value is *PortEntry
-	nameByIndex sync.Map //indexed by ifindex, value is ifname
-	siByIndex   sync.Map // indexed by ifindex, value is vnet.Si
-}
+// each go-routine should also quit when StopCh is closed
+var StopCh <-chan struct{}
 
-var Ports PortsMap
+func Init() {
+	stopch := make(chan struct{})
+	StopCh = stopch
+	vnet.stopch = stopch
 
-type BridgeNotifierFn func()
+	go func() {
+		WG.Add(1)
+		defer WG.Done()
 
-func (p *PortsMap) SetSiByIfindex(ifindex int32, si Si) {
-	p.siByIndex.Store(ifindex, si)
-}
+		// FIXME-XETH how is this used?
+		signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 
-// port or bridge member
-func (p *PortsMap) SetPort(ifname string) (pe *PortEntry) {
-	entry, found := p.Load(ifname)
-	if !found {
-		pe = new(PortEntry)
-		pe.StationAddr = make(net.HardwareAddr, 6)
-	} else {
-		pe = entry.(*PortEntry)
-	}
-	pe.Ifname = ifname
-	p.Store(ifname, pe)
-	return
-}
-
-func (p *PortsMap) SetPortByIndex(ifindex int32, ifname string) *PortEntry {
-	p.nameByIndex.LoadOrStore(ifindex, ifname)
-	if entry, found := p.Load(ifname); found {
-		return entry.(*PortEntry)
-	}
-	return nil
-}
-
-func (p *PortsMap) GetPortByName(ifname string) (*PortEntry, bool) {
-	if entry, found := p.Load(ifname); found {
-		return entry.(*PortEntry), found
-	}
-	return nil, false
-}
-
-func (p *PortsMap) GetPortByIndex(ifindex int32) (*PortEntry, bool) {
-	if ifname, ok := p.nameByIndex.Load(ifindex); ok {
-		if entry, found := p.Load(ifname); found {
-			return entry.(*PortEntry), found
+		sigch := make(chan os.Signal)
+		signal.Notify(sigch, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(sigch)
+		for {
+			select {
+			case <-StopCh:
+				return
+			case <-sigch:
+				Quit()
+				return
+			}
 		}
-	}
-	return nil, false
+	}()
 }
 
-func (p *PortsMap) GetSiByIndex(ifindex int32) (Si, bool) {
-	if entry, found := p.siByIndex.Load(ifindex); found {
-		return entry.(Si), found
-	}
-	return SiNil, false
+func Quit() {
+	close(vnet.stopch)
+	vnet.loop.Quit()
 }
 
-func (p *PortsMap) GetNameByIndex(ifindex int32) (string, bool) {
-	if entry, found := p.nameByIndex.Load(ifindex); found {
-		return entry.(string), found
-	}
-	return "", false
+var RunInitHooks = InitHooks{
+	hooks: []func(){
+		countersCliInit,
+		packageCliInit,
+		logInit,
+		debugInit,
+		bufCliInit,
+		errorCliInit,
+	},
 }
 
-func (p *PortsMap) UnsetPort(ifname string) {
-	dbgvnet.Bridge.Log(ifname)
-
-	entry, found := p.Load(ifname)
-
-	if found {
-		pe := entry.(*PortEntry)
-		dbgvnet.Bridge.Logf("delete port %v ctag:%v stag:%v, ifindex %v",
-			ifname, pe.Ctag, pe.Stag, pe.Ifindex)
-		p.nameByIndex.Delete(pe.Ifindex)
-		p.siByIndex.Delete(pe.Ifindex)
-		p.Delete(ifname)
-	} else {
-		dbgvnet.Bridge.Logf("delete port %v, not found", ifname)
-	}
+var LoopInitHooks = InitHooks{
+	hooks: []func(){
+		errorNodeInit,
+		cliInit,
+		eventNodeInit,
+	},
 }
 
-func (p *PortsMap) Foreach(f func(ifname string, pe *PortEntry)) {
-	p.Range(func(key, value interface{}) bool {
-		ifname := key.(string)
-		pe := value.(*PortEntry)
-		f(ifname, pe)
-		return true
-	})
-}
+// Largest number of outstanding transmit buffers before we suspend.
+const MaxOutstandingTxRefs = 16 * MaxVectorLen
 
-func (p *PortsMap) ForeachNameByIndex(f func(ifindex int32, ifname string)) {
-	p.nameByIndex.Range(func(key, value interface{}) bool {
-		ifindex := key.(int32)
-		ifname := value.(string)
-		f(ifindex, ifname)
-		return true
-	})
-}
-
-func (p *PortsMap) ForeachSiByIndex(f func(ifindex int32, si Si)) {
-	p.siByIndex.Range(func(key, value interface{}) bool {
-		ifindex := key.(int32)
-		si := value.(Si)
-		f(ifindex, si)
-		return true
-	})
-}
-
-func (p *PortsMap) GetNumSubports(ifname string) (numSubports uint) {
-	numSubports = 0
-	entry, found := p.Load(ifname)
-	if !found {
-		return
-	}
-	portindex := entry.(*PortEntry).Portindex
-	p.Foreach(func(ifname string, pe *PortEntry) {
-		if pe.Devtype == xeth.XETH_DEVTYPE_XETH_PORT &&
-			pe.Portindex == int16(portindex) {
-			numSubports++
-		}
-	})
-	return
-}
-
-func (p *PortsMap) IfName(portindex, subportindex int) (name string) {
-	name = ""
-	p.Range(func(key, value interface{}) bool {
-		pe := value.(*PortEntry)
-		if int(pe.Portindex) == portindex && int(pe.Subportindex) == subportindex {
-			name = pe.Ifname
-			return false // sync.Map Range stopes after false
-		}
-		return true // sync.Map Range continues if true
-	})
-	return
+var suspendLimits = loop.SuspendLimits{
+	Suspend: MaxOutstandingTxRefs,
+	Resume:  MaxOutstandingTxRefs / 2,
 }
 
 var (
-	PortIsCopper = func(ifname string) bool { return false }
-	PortIsFec74  = func(ifname string) bool { return false }
-	PortIsFec91  = func(ifname string) bool { return false }
+	Something uint64
+	Another   uint64
 )
 
-type RxTx int
-
-const (
-	Rx RxTx = iota
-	Tx
-	NRxTx
-)
-
-var rxTxStrings = [...]string{
-	Rx: "rx",
-	Tx: "tx",
+func countersCliInit() {
+	counters := AtomicCounters{
+		// please sort with editor
+		{"another", &Another},
+		{"something", &Something},
+	}
+	atomic.StoreUint64(&Something, 123)
+	atomic.StoreUint64(&Another, 456)
+	for _, cmd := range []*cli.Command{
+		&cli.Command{
+			Name:      "clear counter",
+			ShortHelp: "clear all or matching vnet counter(s)",
+			Action:    counters.Clear,
+		},
+		&cli.Command{
+			Name:      "show counter",
+			ShortHelp: "show all or matching vnet counter(s)",
+			Action:    counters.Show,
+		},
+	} {
+		CliAdd(cmd)
+	}
 }
 
-func (x RxTx) String() (s string) {
-	return elib.Stringer(rxTxStrings[:], int(x))
+func AddBufferPool(p *BufferPool) {
+	vnet.BufferMain.AddBufferPool((*hw.BufferPool)(p))
+}
+
+func AddNamedNext(n Noder, name string) uint {
+	if nextIndex, err := vnet.loop.AddNamedNext(n, name); err == nil {
+		return nextIndex
+	} else {
+		panic(err)
+	}
+}
+
+func vnetConfigure(in *parse.Input) (err error) {
+	if err = ConfigurePackages(in); err != nil {
+		return
+	}
+	if err = InitPackages(); err != nil {
+		return
+	}
+	return
+}
+
+func CurrentEvent() *loop.Event {
+	return eventNode.CurrentEvent()
+}
+
+func GetLoop() *loop.Loop {
+	return &vnet.loop
+}
+
+/* FIXME-XETH
+func ForeachHwIf(unixOnly bool, f func(hi Hi)) {
+	for i := range vnet.hwIferPool.elts {
+		if vnet.hwIferPool.IsFree(uint(i)) {
+			continue
+		}
+		hwifer := vnet.hwIferPool.elts[i]
+		if unixOnly && !hwifer.IsUnix() {
+			continue
+		}
+		h := hwifer.GetHwIf()
+		f(h.hi)
+	}
+}
+
+func ForeachSwIf(f func(si Si)) {
+	vnet.swInterfaces.ForeachIndex(func(i uint) {
+		f(Si(i))
+	})
+}
+
+func HwLessThan(a, b *HwIf) (t bool) {
+	ha, hb := vnet.HwIfer(a.hi), vnet.HwIfer(b.hi)
+	da, db := ha.DriverName(), hb.DriverName()
+	if da != db {
+		t = da < db
+	} else {
+		t = ha.LessThan(hb)
+	}
+	return
+}
+
+func SwLessThan(a, b *SwIf) (t bool) {
+	hwa, hwb := vnet.SupHwIf(a), vnet.SupHwIf(b)
+	if hwa != nil && hwb != nil {
+		if hwa != hwb {
+			t = vnet.HwLessThan(hwa, hwb)
+		} else {
+			ha := vnet.HwIfer(hwa.hi)
+			t = ha.LessThanId(a.IfId(), b.IfId())
+	} else if a.kind != b.kind {
+		// Different kind?  Sort by increasing kind.
+		t = a.kind < b.kind
+	} else {
+		// Same kind.
+		t = a.Name() < b.Name()
+	}
+	return
+}
+
+func NewSwIf(kind SwIfKind, x Xer) Si {
+	return addDelSwInterface(SiNil, kind, x, false)
+}
+
+func DelSwIf(si Si) {
+	addDelSwInterface(si, 0, nil, true)
+}
+
+func NewSwSubInterface(supSi Si, x Xer) Si {
+	return addDelSwInterface(SiNil, SwIfKindSoftware, x, false)
+}
+FIXME-XETH */
+
+func RegisterNode(n Noder, format string, args ...interface{}) {
+	vnet.loop.RegisterNode(n, format, args...)
+	x := n.GetVnetNode()
+
+	x.errorRefs = make([]ErrorRef, len(x.Errors))
+	for i := range x.Errors {
+		er := ^ErrorRef(0)
+		if len(x.Errors[i]) > 0 {
+			er = x.NewError(x.Errors[i])
+		}
+		x.errorRefs[i] = er
+	}
+}
+
+func RegisterInOutNode(n InOutNoder, name string, args ...interface{}) {
+	RegisterNode(n, name, args...)
+	x := n.GetInOutNode()
+	x.t = n
+}
+
+func RegisterInputNode(n InputNoder, name string, args ...interface{}) {
+	RegisterNode(n, name, args...)
+	x := n.GetInputNode()
+	x.o = n
+}
+
+func RegisterOutputNode(n OutputNoder, name string, args ...interface{}) {
+	RegisterNode(n, name, args...)
+	x := n.GetOutputNode()
+	x.o = n
+}
+
+/* FIXME-XETH
+func RegisterHwInterface(h HwInterfacer, x Xer) error {
+	hi := Hi(vnet.hwIferPool.GetIndex())
+	vnet.hwIferPool.elts[hi] = h
+	hw := h.GetHwIf()
+	hw.hi = hi
+	hw.X.Xer = x
+	x.Vi(Vi(hi))
+	hw.Dub(x.Name())
+	hw.Identify(x.Xid())
+	hw.si = v.NewSwIf(SwIfKindHardware, x)
+
+	isDel := false
+	for i := range vnet.interfaceMain.hwIfAddDelHooks.hooks {
+		err := vnet.interfaceMain.hwIfAddDelHooks.Get(i)(hi, isDel)
+		if err != nil {
+			panic(err) // how to recover?
+		}
+	}
+	return nil
+}
+FIXME-XETH */
+
+func Run(in *parse.Input) error {
+	defer WG.Wait()
+	RunInitHooks.Run()
+	loop.AddInit(func(l *loop.Loop) {
+		/* FIXME-XETH
+		vnet.interfaceMain.init()
+		FIXME-XETH */
+		LoopInitHooks.Run()
+		if err := vnetConfigure(in); err != nil {
+			panic(err)
+		}
+	})
+	vnet.loop.Run()
+	return ExitPackages()
+}
+
+func SignalEvent(r Eventer) {
+	eventNode.SignalEventp(r, elog.PointerToFirstArg(&vnet))
+}
+
+func SignalEventAfter(r Eventer, dt float64) {
+	eventNode.SignalEventAfterp(r, dt, elog.PointerToFirstArg(&vnet))
+}
+
+func TimeDiff(t0, t1 cpu.Time) float64 {
+	return vnet.loop.TimeDiff(t1, t0)
 }
 
 type IsDel bool
@@ -232,58 +306,6 @@ func (x IsDel) String() string {
 	return "add"
 }
 
-//go:generate gentemplate -id initHook -d Package=vnet -d DepsType=initHookVec -d Type=initHook -d Data=hooks github.com/platinasystems/elib/dep/dep.tmpl
-type initHook func(v *Vnet)
-
-var initHooks initHookVec
-
-func AddInit(f initHook, deps ...*dep.Dep) { initHooks.Add(f, deps...) }
-
-func (v *Vnet) configure(in *parse.Input) (err error) {
-	if err = v.ConfigurePackages(in); err != nil {
-		return
-	}
-	if err = v.InitPackages(); err != nil {
-		return
-	}
-	return
-}
-func (v *Vnet) TimeDiff(t0, t1 cpu.Time) float64 { return v.loop.TimeDiff(t1, t0) }
-
-func (v *Vnet) Run(in *parse.Input) (err error) {
-	loop.AddInit(func(l *loop.Loop) {
-		v.interfaceMain.init()
-		v.CliInit()
-		v.eventInit()
-		for i := range initHooks.hooks {
-			initHooks.Get(i)(v)
-		}
-		if err := v.configure(in); err != nil {
-			panic(err)
-		}
-	})
-	v.loop.Run()
-	err = v.ExitPackages()
-	return
-}
-
-func (v *Vnet) Quit() { v.loop.Quit() }
-
-func (pe *PortEntry) AddIPNet(ipnet *net.IPNet) {
-	pe.IPNets = append(pe.IPNets, ipnet)
-}
-
-func (pe *PortEntry) DelIPNet(ipnet *net.IPNet) {
-	for i, peipnet := range pe.IPNets {
-		if peipnet.IP.Equal(ipnet.IP) {
-			n := len(pe.IPNets) - 1
-			copy(pe.IPNets[i:], pe.IPNets[i+1:])
-			pe.IPNets = pe.IPNets[:n]
-			break
-		}
-	}
-}
-
 type ActionType int
 
 const (
@@ -293,6 +315,8 @@ const (
 	Dynamic                          // free-run case
 )
 
+/* FIXME-XETH this needs better abstraction as vnet shouldn't need anything
+ * bridge (svi) specific...
 // Could collapse all vnet Hooks calls into this message
 // to avoid direct function calls from vnet to fe
 type SviVnetFeMsg struct {
@@ -320,6 +344,8 @@ type FromFeMsg struct {
 	PipePort uint16
 }
 
+type BridgeNotifierFn func()
+
 var SviFromFeCh chan FromFeMsg // for l2-mod learning event reporting
 
 // simplified hooks for direct calls to fe1 from vnet
@@ -338,3 +364,4 @@ func (v *Vnet) RegisterBridgeMemberAddDelHook(h BridgeMemberAddDelHook_t) {
 func (v *Vnet) RegisterBridgeMemberLookup(h BridgeMemberLookup_t) {
 	v.BridgeMemberLookup = h
 }
+FIXME-XETH */

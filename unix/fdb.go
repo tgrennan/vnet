@@ -9,6 +9,9 @@
 //  - ifinfo (admin up/down)
 //  - neighbor add/delete/replace
 //
+
+// +build ignore
+
 package unix
 
 import (

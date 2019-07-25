@@ -1,17 +1,19 @@
-// Copyright 2016 Platina Systems, Inc. All rights reserved.
+// Copyright © 2016-2019 Platina Systems, Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
 package vnet
 
 import (
+	"bufio"
+	"fmt"
+	"os"
+	"sort"
+
 	"github.com/platinasystems/elib/cli"
 	"github.com/platinasystems/elib/dep"
 	"github.com/platinasystems/elib/elog"
 	"github.com/platinasystems/elib/parse"
-
-	"fmt"
-	"os"
 )
 
 type Packager interface {
@@ -30,7 +32,6 @@ const (
 )
 
 type Package struct {
-	Vnet *Vnet
 	name string
 
 	depMap [nDepType]map[string]struct{}
@@ -45,7 +46,7 @@ func (p *Package) Configure(in *parse.Input) {
 	panic(cli.ParseError)
 }
 
-type packageMain struct {
+var packageMain struct {
 	packageByName parse.StringMap
 	packages      []Packager
 	deps          dep.Deps
@@ -71,33 +72,35 @@ func (p *Package) DependedOnBy(names ...string) {
 	}
 }
 
-func (v *Vnet) AddPackage(name string, r Packager) (pi uint) {
-	m := &v.packageMain
+func AddPackage(name string, r Packager) (pi uint) {
 	// Package with index zero is always empty.
 	// Protects against uninitialized package index variables.
-	if len(m.packages) == 0 {
-		m.packages = append(m.packages, &Package{name: "(empty)"})
+	if len(packageMain.packages) == 0 {
+		packageMain.packages =
+			append(packageMain.packages, &Package{name: "(empty)"})
 	}
 
 	// Already registered
 	var ok bool
-	if pi, ok = m.packageByName[name]; ok {
+	if pi, ok = packageMain.packageByName[name]; ok {
 		return
 	}
 
-	pi = uint(len(m.packages))
-	m.packageByName.Set(name, pi)
-	m.packages = append(m.packages, r)
+	pi = uint(len(packageMain.packages))
+	packageMain.packageByName.Set(name, pi)
+	packageMain.packages = append(packageMain.packages, r)
 	p := r.GetPackage()
 	p.name = name
-	p.Vnet = v
 	return
 }
 
-func (m *packageMain) GetPackage(i uint) Packager { return m.packages[i] }
-func (m *packageMain) PackageByName(name string) (i uint, ok bool) {
-	i, ok = m.packageByName[name]
+func PackageByName(name string) (i uint, ok bool) {
+	i, ok = packageMain.packageByName[name]
 	return
+}
+
+func GetPackage(i uint) Packager {
+	return packageMain.packages[i]
 }
 
 func (p *Package) configure(r Packager, in *parse.Input) (err error) {
@@ -110,8 +113,7 @@ func (p *Package) configure(r Packager, in *parse.Input) (err error) {
 	return
 }
 
-func (v *Vnet) ConfigurePackages(in *parse.Input) (err error) {
-	m := &v.packageMain
+func ConfigurePackages(in *parse.Input) (err error) {
 	// Parse package configuration.
 	for !in.End() {
 		var (
@@ -119,14 +121,14 @@ func (v *Vnet) ConfigurePackages(in *parse.Input) (err error) {
 			subIn parse.Input
 		)
 		switch {
-		case in.Parse("%v %v", m.packageByName, &i, &subIn):
-			r := m.packages[i]
+		case in.Parse("%v %v", packageMain.packageByName, &i, &subIn):
+			r := packageMain.packages[i]
 			p := r.GetPackage()
 			if err = p.configure(r, &subIn); err != nil {
 				return
 			}
 		case in.Parse("vnet %v", &subIn):
-			if err = v.Configure(&subIn); err != nil {
+			if err = Configure(&subIn); err != nil {
 				return
 			}
 		case in.Parse("elog %v", &subIn):
@@ -140,7 +142,7 @@ func (v *Vnet) ConfigurePackages(in *parse.Input) (err error) {
 	return
 }
 
-func (v *Vnet) Configure(in *parse.Input) (err error) {
+func Configure(in *parse.Input) (err error) {
 	for !in.End() {
 		var logFile string
 		switch {
@@ -150,10 +152,10 @@ func (v *Vnet) Configure(in *parse.Input) (err error) {
 			if err != nil {
 				return
 			}
-			v.loop.Config.LogWriter = f
-		case in.Parse("quit %f", &v.loop.Config.QuitAfterDuration):
+			vnet.loop.Config.LogWriter = f
+		case in.Parse("quit %f", &vnet.loop.Config.QuitAfterDuration):
 		case in.Parse("quit"):
-			v.loop.Config.QuitAfterDuration = 1e-6 // must be positive to enable
+			vnet.loop.Config.QuitAfterDuration = 1e-6 // must be positive to enable
 		default:
 			in.ParseError()
 		}
@@ -161,14 +163,43 @@ func (v *Vnet) Configure(in *parse.Input) (err error) {
 	return
 }
 
-func (m *packageMain) InitPackages() (err error) {
+func showPackages(c cli.Commander, iw cli.Writer, in *cli.Input) error {
+	var names []string
+
+	for name := range packageMain.packageByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	w := bufio.NewWriter(iw)
+	for _, name := range names {
+		fmt.Fprint(w, name)
+		w.WriteByte('\n')
+	}
+	w.Flush()
+	return nil
+}
+
+func packageCliInit() {
+	for _, cmd := range []*cli.Command{
+		&cli.Command{
+			Name:      "show packages",
+			ShortHelp: "show registered vnet packages",
+			Action:    showPackages,
+		},
+	} {
+		CliAdd(cmd)
+	}
+}
+
+func InitPackages() (err error) {
 	// Resolve package dependencies.
-	for i := range m.packages {
-		p := m.packages[i].GetPackage()
+	for i := range packageMain.packages {
+		p := packageMain.packages[i].GetPackage()
 		for typ := range p.depMap {
 			for name := range p.depMap[typ] {
-				if j, ok := m.packageByName[name]; ok {
-					d := m.packages[j].GetPackage()
+				j, ok := packageMain.packageByName[name]
+				if ok {
+					d := packageMain.packages[j].GetPackage()
 					if typ == forward {
 						p.dep.Deps = append(p.dep.Deps, &d.dep)
 					} else {
@@ -179,12 +210,12 @@ func (m *packageMain) InitPackages() (err error) {
 				}
 			}
 		}
-		m.deps.Add(&p.dep)
+		packageMain.deps.Add(&p.dep)
 	}
 
 	// Call package init functions.
-	for i := range m.packages {
-		p := m.packages[m.deps.Index(i)]
+	for i := range packageMain.packages {
+		p := packageMain.packages[packageMain.deps.Index(i)]
 		err = p.Init()
 		if err != nil {
 			return
@@ -193,9 +224,9 @@ func (m *packageMain) InitPackages() (err error) {
 	return
 }
 
-func (m *packageMain) ExitPackages() (err error) {
-	for i := range m.packages {
-		p := m.packages[m.deps.IndexReverse(i)]
+func ExitPackages() (err error) {
+	for i := range packageMain.packages {
+		p := packageMain.packages[packageMain.deps.IndexReverse(i)]
 		err = p.Exit()
 		if err != nil {
 			return

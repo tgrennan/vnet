@@ -9,10 +9,8 @@ import (
 	"github.com/platinasystems/elib/parse"
 )
 
-func (v *Vnet) CliAdd(c *cli.Command)                     { v.loop.CliAdd(c) }
-func (v *Vnet) Logf(format string, args ...interface{})   { v.loop.Logf(format, args...) }
-func (v *Vnet) Logln(args ...interface{})                 { v.loop.Logln(args...) }
-func (v *Vnet) Fatalf(format string, args ...interface{}) { v.loop.Fatalf(format, args...) }
+var CliAdd = vnet.loop.CliAdd
+var Fatalf = vnet.loop.Fatalf
 
 type cliListener struct {
 	socketConfig string
@@ -36,15 +34,12 @@ func (l *cliListener) Parse(in *parse.Input) {
 
 type cliMain struct {
 	Package
-	v           *Vnet
 	enableStdin bool
 	listeners   []cliListener
 }
 
-func (v *Vnet) CliInit() {
-	m := &v.cliMain
-	m.v = v
-	v.AddPackage("cli", m)
+func cliInit() {
+	AddPackage("cli", &vnet.cliMain)
 }
 
 func (m *cliMain) Configure(in *parse.Input) {
@@ -65,19 +60,19 @@ func (m *cliMain) Configure(in *parse.Input) {
 }
 
 func (m *cliMain) Init() (err error) {
-	m.v.loop.Cli.Prompt = "vnet# "
-	m.v.loop.Cli.SetEventNode(&m.v.eventMain.eventNode)
+	vnet.loop.Cli.Prompt = "vnet# "
+	vnet.loop.Cli.SetEventNode(&eventNode)
 	if m.enableStdin {
-		m.v.loop.Cli.AddStdin()
+		vnet.loop.Cli.AddStdin()
 	}
 	for i := range m.listeners {
 		l := &m.listeners[i]
-		l.server, err = m.v.loop.Cli.AddServer(l.socketConfig, l.serverConfig)
+		l.server, err = vnet.loop.Cli.AddServer(l.socketConfig, l.serverConfig)
 		if err != nil {
 			return
 		}
 	}
-	m.v.loop.Cli.Start()
+	vnet.loop.Cli.Start()
 	return
 }
 
@@ -86,6 +81,6 @@ func (m *cliMain) Exit() (err error) {
 		l := &m.listeners[i]
 		l.server.Close()
 	}
-	m.v.loop.Cli.Exit()
+	vnet.loop.Cli.Exit()
 	return
 }

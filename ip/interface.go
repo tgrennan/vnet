@@ -56,7 +56,8 @@ func (m *Main) swIfAddDel(v *vnet.Vnet, si vnet.Si, isDel bool) (err error) {
 			a := m.GetIfAddr(ai)
 			k := makeIfAddrMapKey(a.Prefix.IP, m.FibIndexForSi(si))
 			delete(m.addrMap, k)
-			dbgvnet.Adj.Logf("INFO delete IfAddr %v %v from swIf delete\n", &a.Prefix, vnet.SiName{V: v, Si: si})
+			dbgvnet.Adj.Logf("INFO delete IfAddr %v %v from swIf delete\n",
+				&a.Prefix, vnet.SiName{v, si})
 			m.ifAddressPool.PutIndex(uint(ai))
 			ai = a.next
 		}
@@ -132,7 +133,7 @@ func (m *Main) AddDelInterfaceAddress(si vnet.Si, p *net.IPNet, isDel bool) (ai 
 
 	if isDel {
 		if a == nil {
-			err = fmt.Errorf("%s: address %s not found", vnet.SiName{V: m.v, Si: si}, &p)
+			err = fmt.Errorf("%v: address %s not found", vnet.SiName{m.v, si}, &p)
 			return
 		}
 		if a.prev != IfAddrNil {

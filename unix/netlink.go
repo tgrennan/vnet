@@ -4,6 +4,7 @@
 
 package unix
 
+/*FIXME-XETH
 import (
 	"github.com/platinasystems/elib/elog"
 	"github.com/platinasystems/elib/loop"
@@ -103,6 +104,13 @@ type netlink_main struct {
 	msg_stats    struct {
 		ignored, handled msg_counts
 	}
+}
+
+func (m *netlink_main) namespace_register_nodes() {
+	nm := &m.m.net_namespace_main
+	nm.m = m.m
+	nm.rx_node.init(m.m)
+	nm.tx_node.init(nm)
 }
 
 type dummy_interface struct {
@@ -275,6 +283,119 @@ func (nm *netlink_main) Init(m *Main) {
 	nm.namespace_register_nodes()
 }
 
+func (m *netlink_main) newEvent() interface{} {
+	return &netlinkEvent{m: m.m}
+}
+
+func (m *netlink_main) show_net_namespaces(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+	nm := &m.m.net_namespace_main
+
+	var matching_ns_names []parse.Regexp
+	show_procs := false
+	detail := false
+	for !in.End() {
+		var re parse.Regexp
+		switch {
+		case in.Parse("p%*rocess"):
+			show_procs = true
+		case in.Parse("d%*etail"):
+			detail = true
+		case in.Parse("m%*atching %v", &re):
+			matching_ns_names = append(matching_ns_names, re)
+		case in.Parse("%v", &re):
+			matching_ns_names = append(matching_ns_names, re)
+		default:
+			err = cli.ParseError
+			return
+		}
+	}
+
+	if show_procs {
+		type proc struct {
+			Command   string `format:"%-40s"`
+			Pid       uint64 `format:"%8d"`
+			Namespace string `format:"%s" align:"center" width:"30"`
+			NSID      string `format:"%s" align:"center"`
+			Inode     uint64 `format:"0x%8x" width:"16" align:"center"`
+		}
+		var ps []proc
+		nm.foreachProcFs(func(p *net_namespace_process) {
+			x := proc{
+				Command: p.command,
+				Pid:     p.pid,
+				Inode:   p.inode,
+			}
+			if p.nsid != netlink.DefaultNsid {
+				x.NSID = fmt.Sprintf("%d", p.nsid)
+			}
+			if p.ns != nil {
+				x.Namespace = p.ns.name
+			}
+			if !detail && x.Namespace == default_namespace_name {
+				return
+			}
+			ps = append(ps, x)
+		})
+		sort.Slice(ps, func(i, j int) bool {
+			pi, pj := &ps[i], &ps[j]
+			if pi.Namespace == pj.Namespace {
+				return pi.Command < pj.Command
+			}
+			return pi.Namespace < pj.Namespace
+		})
+		elib.Tabulate(ps).Write(w)
+		return
+	}
+
+	type nsIf struct {
+		Interface string  `format:"%-30s"`
+		Type      string  `format:"%s" align:"center"`
+		Namespace string  `format:"%s" align:"center" width:"30"`
+		NSID      string  `format:"%s" align:"center"`
+		Si        vnet.Si `format:"0x%x" align:"center"`
+	}
+	var ifs []nsIf
+	for _, ns := range nm.namespace_by_name {
+		for _, intf := range ns.interface_by_index {
+			// Filter by namespace name.
+			if len(matching_ns_names) > 0 {
+				found := false
+				for i := range matching_ns_names {
+					if found = matching_ns_names[i].MatchString(ns.name); found {
+						break
+					}
+				}
+				if !found {
+					continue
+				}
+			}
+
+			x := nsIf{Namespace: ns.name, Interface: intf.name, Type: intf.kind.String(), Si: vnet.SiNil}
+			x.Si = intf.si
+			if ns.nsid != -1 {
+				x.NSID = fmt.Sprintf("%d", ns.nsid)
+			}
+			ifs = append(ifs, x)
+		}
+	}
+	sort.Slice(ifs, func(i, j int) bool {
+		ni, nj := &ifs[i], &ifs[j]
+		if ni.Namespace == nj.Namespace {
+			if ni.Si != vnet.SiNil && nj.Si != vnet.SiNil {
+				ifi, ifj := m.m.v.SwIf(ni.Si), m.m.v.SwIf(nj.Si)
+				return m.m.v.SwLessThan(ifi, ifj)
+			}
+			return ni.Interface < nj.Interface
+		}
+		return ni.Namespace < nj.Namespace
+	})
+	colMap := map[string]bool{
+		"si": false,
+	}
+	elib.Tabulate(ifs).WriteCols(w, colMap)
+	return
+}
+
 type netlinkEvent struct {
 	vnet.Event
 	m    *Main
@@ -282,9 +403,11 @@ type netlinkEvent struct {
 	msgs []netlink.Message
 }
 
-func (m *netlink_main) newEvent() interface{} {
-	return &netlinkEvent{m: m.m}
+func (e *netlinkEvent) netnsMessage(msg *netlink.NetnsMessage) (err error) {
+	// Nothing to do.  Discovery of namespaces is done via files in /var/run
+	return
 }
+
 func (ns *net_namespace) getEvent(m *Main) *netlinkEvent {
 	v := m.netlink_main.eventPool.Get().(*netlinkEvent)
 	*v = netlinkEvent{m: v.m}
@@ -388,33 +511,6 @@ func (e *netlinkElogEvent) Elog(l *elog.Log) {
 	} else {
 		l.Logf("netlink %s %d %s", e.nsName, e.kindCounts[0].count, e.kindCounts[0].kind)
 	}
-}
-
-func (ns *net_namespace) siForIfIndex(ifIndex uint32) (si vnet.Si, ok bool) {
-	si = vnet.SiNil
-	si, ok = ns.si_by_ifindex.get(ifIndex)
-	return
-}
-
-func (ns *net_namespace) fibIndexForNamespace() ip.FibIndex { return ip.FibIndex(ns.index) }
-func (ns *net_namespace) fibInit(is_del bool) {
-	m4 := ip4.GetMain(ns.m.m.v)
-	var name string
-	if !is_del {
-		name = ns.name
-	}
-	fi := ns.fibIndexForNamespace()
-	m4.SetFibNameForIndex(name, fi)
-	if is_del {
-		m4.FibReset(fi)
-	}
-}
-func (ns *net_namespace) validateFibIndexForSi(si vnet.Si) {
-	m4 := ip4.GetMain(ns.m.m.v)
-	fi := ns.fibIndexForNamespace()
-
-	m4.SetFibIndexForSi(si, fi)
-	return
 }
 
 func (e *netlinkEvent) EventAction() {
@@ -844,3 +940,5 @@ func ip6Prefix(t netlink.Attr, l uint8) (p ip6.Prefix) {
 func (e *netlinkEvent) ip6IfaddrMsg(v *netlink.IfAddrMessage) (err error)                   { return }
 func (e *netlinkEvent) ip6NeighborMsg(v *netlink.NeighborMessage) (err error)               { return }
 func (e *netlinkEvent) ip6RouteMsg(v *netlink.RouteMessage, isLastInEvent bool) (err error) { return }
+
+FIXME-XETH*/

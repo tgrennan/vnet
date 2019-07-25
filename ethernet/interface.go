@@ -1,4 +1,4 @@
-// Copyright 2016 Platina Systems, Inc. All rights reserved.
+// Copyright © 2016-2019 Platina Systems, Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -10,51 +10,10 @@ import (
 	"github.com/platinasystems/elib/cli"
 	"github.com/platinasystems/elib/parse"
 	"github.com/platinasystems/vnet"
-	"github.com/platinasystems/vnet/internal/dbgvnet"
 
-	"errors"
 	"fmt"
 	"unsafe"
 )
-
-// Spanning Tree State IEEE 802.1d
-type IfSpanningTreeState int
-
-// Possible spanning tree states.
-const (
-	Disable IfSpanningTreeState = iota + 1
-	Block
-	Listen
-	Learn
-	Forward
-)
-
-var spanningTreeStateNames = [...]string{
-	Disable: "disable",
-	Block:   "block",
-	Listen:  "listen",
-	Learn:   "learn",
-	Forward: "forward",
-}
-
-func (x IfSpanningTreeState) String() string {
-	return elib.StringerHex(spanningTreeStateNames[:], int(x))
-}
-
-// Full or half duplex.
-type IfDuplex int
-
-const (
-	Full IfDuplex = iota + 1
-	Half
-)
-
-var ifDuplexNames = [...]string{
-	Full: "full",
-	Half: "half",
-}
-
-func (x IfDuplex) String() string { return elib.StringerHex(ifDuplexNames[:], int(x)) }
 
 // Physical interface between ethernet MAC and PHY.
 type PhyInterface int
@@ -126,97 +85,18 @@ var phyInterfaceNames = [...]string{
 
 func (x PhyInterface) String() string { return elib.StringerHex(phyInterfaceNames[:], int(x)) }
 
-type InterfaceConfig struct {
-	Address             Address
-	PhyInterface        PhyInterface
-	NativeVlan          Vlan
-	Unprovisioned       bool
-	ErrorCorrectionType ErrorCorrectionType
-}
-
 type Interface struct {
 	vnet.HwIf
-
-	InterfaceConfig
-
-	duplex IfDuplex
-
-	autoNegotiation bool
-
-	spanningTreeState IfSpanningTreeState
-	loopback          vnet.IfLoopbackType
-}
-
-type ErrorCorrectionType uint8
-
-const (
-	ErrorCorrectionNone = iota
-	ErrorCorrectionCL74 // IEEE Clause 74 for 10g ethernet
-	ErrorCorrectionCL91 // IEEE Clause 91 for 100g ethernet
-)
-
-func (t *ErrorCorrectionType) Parse(in *parse.Input) {
-	switch text := in.Token(); text {
-	case "cl74", "CL74":
-		*t = ErrorCorrectionCL74
-	case "cl91", "CL91":
-		*t = ErrorCorrectionCL91
-	case "none", "NONE":
-		*t = ErrorCorrectionNone
-	default:
-		in.ParseError()
-	}
-	return
-}
-
-func (x ErrorCorrectionType) String() string {
-	t := [...]string{
-		ErrorCorrectionNone: "none",
-		ErrorCorrectionCL74: "cl74",
-		ErrorCorrectionCL91: "cl91",
-	}
-	return elib.StringerHex(t[:], int(x))
-}
-
-func SetInterfaceErrorCorrection(v *vnet.Vnet, hi vnet.Hi, et ErrorCorrectionType) (err error) {
-	h, ok := v.HwIfer(hi).(HwInterfacer)
-	if !ok {
-		err = fmt.Errorf("not ethernet interface")
-		return
-	}
-	i := h.GetInterface()
-	i.ErrorCorrectionType = et
-	err = h.SetErrorCorrection()
-	return
 }
 
 func (i *Interface) GetInterface() *Interface { return i }
 
-// Default implementation: nothing supported.
-func (i *Interface) SetErrorCorrection() (err error) {
-	if i.ErrorCorrectionType != ErrorCorrectionNone {
-		err = errors.New("not supported")
-	}
-	return
-}
-
 func (i *Interface) ConfigureHwIf(in *cli.Input) (ok bool, err error) {
-	var (
-		fec ErrorCorrectionType
-	)
-	ok = true
-	switch {
-	case in.Parse("fec %v", &fec):
-		err = SetInterfaceErrorCorrection(i.GetVnet(), i.Hi(), fec)
-	default:
-		ok = false
-	}
-	return
+	return false, fmt.Errorf("can't configure w/ vnet")
 }
 
 type HwInterfacer interface {
 	GetInterface() *Interface
-	SetErrorCorrection() (err error)
 	vnet.HwInterfacer
 }
 
@@ -307,16 +187,6 @@ func (i *Interface) FormatId(aʹ vnet.IfId) (v string) {
 // Dummy function to mark ethernet interfaces as supporting ARP.
 func (i *Interface) SupportsArp() {}
 
-func RegisterInterface(v *vnet.Vnet, hi HwInterfacer, config *InterfaceConfig, format string, args ...interface{}) {
-	i := hi.GetInterface()
-	i.InterfaceConfig = *config
-	v.RegisterAndProvisionHwInterface(hi, !config.Unprovisioned, format, args...)
-}
-
-func (hi *Interface) FormatAddress() string { return hi.Address.String() }
-func (hi *Interface) GetAddress() []byte    { return hi.Address[:] }
-func (hi *Interface) SetAddress(a []byte)   { copy(hi.Address[:], a) }
-
 var rewriteTypeMap = [...]Type{
 	vnet.IP4:            TYPE_IP4,
 	vnet.IP6:            TYPE_IP6,
@@ -330,30 +200,6 @@ func (et *Type) SetPacketType(pt vnet.PacketType) { *et = rewriteTypeMap[pt].Fro
 type rwHeader struct {
 	Header
 	vlan [2]VlanHeader
-}
-
-func (br *bridgeEntry) SetRewrite(v *vnet.Vnet, rw *vnet.Rewrite, packetType vnet.PacketType, da []byte, ctag uint16) {
-	var h rwHeader
-
-	t := rewriteTypeMap[packetType].FromHost()
-	size := uintptr(SizeofHeader)
-
-	h.Type = TYPE_VLAN.FromHost()
-	h.vlan[0].Tag = VlanTag(ctag).FromHost()
-	h.vlan[0].Type = t
-	size += SizeofVlanHeader
-
-	if len(da) > 0 {
-		copy(h.Dst[:], da)
-	} else {
-		h.Dst = BroadcastAddr
-	}
-	copy(h.Src[:], br.port.StationAddr[:])
-	dbgvnet.Bridge.Logf("br rewrite hdr=%+v", h)
-	rw.ResetData()
-	rw.AddData(unsafe.Pointer(&h), size)
-
-	return
 }
 
 func (hi *Interface) SetRewrite(v *vnet.Vnet, rw *vnet.Rewrite, packetType vnet.PacketType, da []byte) {
@@ -386,7 +232,7 @@ func (hi *Interface) SetRewrite(v *vnet.Vnet, rw *vnet.Rewrite, packetType vnet.
 	} else {
 		h.Dst = BroadcastAddr
 	}
-	copy(h.Src[:], hi.Address[:])
+	copy(h.Src[:], hi.HardwareAddr()[:])
 	rw.ResetData()
 	rw.AddData(unsafe.Pointer(&h), size)
 }
@@ -481,73 +327,4 @@ func (hi *Interface) ParseRewrite(r *vnet.Rewrite, in *parse.Input) {
 		}
 	}
 	r.SetData(b[:i])
-}
-
-// Block of ethernet addresses for allocation by a switch.
-type AddressBlock struct {
-	// Base ethernet address (stored in board's EEPROM).
-	Base Address
-
-	// Number of addresses starting at base.
-	Count uint32
-
-	nAlloc  uint32
-	freeMap map[uint32]struct{}
-}
-
-func (a *Address) add(offset uint32) {
-	for i, o := 0, offset; o != 0 && i < SizeofAddress; i++ {
-		j := SizeofAddress - 1 - i
-		x := uint8(o)
-		y := a[j]
-		y += x
-		a[j] = y
-		o >>= 8
-		// Add in carry.
-		if y < x {
-			o++
-		}
-	}
-}
-
-func (b *AddressBlock) Alloc() (Address, bool) {
-	a := b.Base
-	ok := false
-	var offset uint32
-	for o, _ := range b.freeMap {
-		delete(b.freeMap, o)
-		offset = o
-		ok = true
-		break
-	}
-	if !ok {
-		if ok = b.nAlloc < b.Count; ok {
-			offset = b.nAlloc
-			b.nAlloc++
-		}
-	}
-	if ok {
-		a.add(offset)
-	}
-	return a, ok
-}
-
-func (b *AddressBlock) Free(a *Address) {
-	offset := uint64(0)
-	for i := range a {
-		j := SizeofAddress - 1 - i
-		offset += uint64(a[j]-b.Base[j]) << uint64(8*i)
-	}
-
-	if b.freeMap == nil {
-		b.freeMap = make(map[uint32]struct{})
-	}
-	o := uint32(offset)
-	if o >= b.Count {
-		panic("bad free")
-	}
-	if _, ok := b.freeMap[o]; ok {
-		panic("duplicate free")
-	}
-	b.freeMap[o] = struct{}{}
 }

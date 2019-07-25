@@ -69,8 +69,10 @@ type Main struct {
 	verbose_netlink bool
 	interface_filter
 	net_namespace_main
+	/*FIXME-XETH
 	netlink_main
 	FdbMain
+	FIXME-XETH*/
 	Config
 }
 
@@ -84,8 +86,10 @@ func Init(v *vnet.Vnet, cf Config) {
 	m := &Main{}
 	m.v = v
 	m.Config = cf
+	/*FIXME-XETH
 	m.netlink_main.Init(m)
 	m.FdbMain.Init(m)
+	FIXME-XETH*/
 	packageIndex = v.AddPackage("unix", m)
 }
 
