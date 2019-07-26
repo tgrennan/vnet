@@ -9,12 +9,14 @@ import (
 	"github.com/platinasystems/vnet"
 )
 
+const PackageName = "pci-discovery"
+
 type pciDiscover struct {
 	vnet.Package
 }
 
 func (d *pciDiscover) Init() error {
-	return pci.DiscoverDevices(pci.DefaultBus, d.Vnet)
+	return pci.DiscoverDevices(pci.DefaultBus)
 }
 
 func (d *pciDiscover) Exit() error {
@@ -22,8 +24,7 @@ func (d *pciDiscover) Exit() error {
 }
 
 func Init() {
-	name := "pci-discovery"
-	if _, ok := vnat.PackageByName(name); !ok {
-		vnet.AddPackage(name, &pciDiscover{})
+	if _, ok := vnet.PackageByName(PackageName); !ok {
+		vnet.AddPackage(PackageName, &pciDiscover{})
 	}
 }
