@@ -5,11 +5,7 @@
 package vnet
 
 import (
-	"os"
-	"os/signal"
-	"sync"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/platinasystems/elib/cli"
 	"github.com/platinasystems/elib/cpu"
@@ -24,44 +20,9 @@ var vnet struct {
 	hw.BufferMain
 	loop    loop.Loop
 	cliMain cliMain
-	stopch  chan<- struct{}
-}
-
-// each go-routine shoule vnet.WG.Add(1) then defer vnet.WG.Done()
-var WG sync.WaitGroup
-
-// each go-routine should also quit when StopCh is closed
-var StopCh <-chan struct{}
-
-func Init() {
-	stopch := make(chan struct{})
-	StopCh = stopch
-	vnet.stopch = stopch
-
-	go func() {
-		WG.Add(1)
-		defer WG.Done()
-
-		// FIXME-XETH how is this used?
-		signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
-
-		sigch := make(chan os.Signal)
-		signal.Notify(sigch, syscall.SIGTERM, syscall.SIGINT)
-		defer signal.Stop(sigch)
-		for {
-			select {
-			case <-StopCh:
-				return
-			case <-sigch:
-				Quit()
-				return
-			}
-		}
-	}()
 }
 
 func Quit() {
-	close(vnet.stopch)
 	vnet.loop.Quit()
 }
 
@@ -270,12 +231,8 @@ func RegisterHwInterface(h HwInterfacer, x Xer) error {
 FIXME-XETH */
 
 func Run(in *parse.Input) error {
-	defer WG.Wait()
 	RunInitHooks.Run()
 	loop.AddInit(func(l *loop.Loop) {
-		/* FIXME-XETH
-		vnet.interfaceMain.init()
-		FIXME-XETH */
 		LoopInitHooks.Run()
 		if err := vnetConfigure(in); err != nil {
 			panic(err)
